@@ -2,6 +2,7 @@
 from threading import Thread
 import time
 import os
+from queue import Queue
 
 class Transmitter(object):
     def __init__(self, serial,messager) -> None:
@@ -16,16 +17,14 @@ class Transmitter(object):
         self.serial = serial
         self.senderID = 49
 
-    def set_tx_data(self,data):
+    def set_tx_data(self,data:list):
         self.data = data
         self.data_tmp = data
 
     def set_tx_cmd(self, cmd):
-        self.cmd = cmd
+        self.cmd = int(cmd)
     
     def construct_message(self):
-        if self.TOKEN >= 255:
-            self.TOKEN = 0
         self.message["stx"] = 2
         self.message["protocol_rev"] = [254, 1]
         self.message["token"] = self.TOKEN
@@ -36,6 +35,10 @@ class Transmitter(object):
         self.message["etx"] = 3
 
     def calc_checksum_tx(self):
+        if self.TOKEN >= 255:
+            self.TOKEN = 0
+        else:
+            self.TOKEN += 1
         checksum = 0
         checksum ^= self.message.get("protocol_rev")[0]
         checksum ^= self.message.get("protocol_rev")[1]
@@ -49,33 +52,33 @@ class Transmitter(object):
         self.checksum[3] = checksum
         #print("CHECKSUM:", checksum)
 
-    def data_add_esc(self):
-        list = []
-        for i in range (0,len(self.data)):
-            if self.data[i] in [2,3,27]:
-                list.append(27)
-                list.append(self.data[i])
-            else:
-                list.append(self.data[i])
-        self.data_tmp = list
-
     def send_message(self):
         message = []
         for i in self.message:
             if type(self.message[i]) is list:
                 for j in self.message[i]:
+                    if j in [2,3,27]:
+                        message.append(27)
                     message.append(j)
             else:
-                if (i=="token"):
-                    if (self.message[i] == 3) or (self.message[i] == 27) or (self.message[i] == 2):
-                        message.append(27)
+                if self.message[i] in [2,3,27] and i not in ["stx", "etx"]:
+                    message.append(27)
                 message.append(self.message[i])
-        self.TOKEN += 1
         print(f"Trasmitted message : {message}")
         message = bytes(message)
-        
         self.serial.write_serial(message)
-        # print(message)
+
+    def send_ACK(self):
+        mess = bytes([6,self.TOKEN])
+        # print(mess)
+        self.serial.write_serial(mess)
+
+    def send_NACK(self):
+        mess = bytes([15,self.TOKEN])
+        # print(mess)
+        self.serial.write_serial(mess)
+
+
     
 class Receiver(object):
 
@@ -98,6 +101,7 @@ class Receiver(object):
         self.message["data"] = message[7:-5]
         self.message["checksum"] = message[-5:-1]
         self.message["etx"] = message[-1]
+        self.TOKEN = int(self.message.get("token"))
 
     def calc_checksum(self):
         checksum = 0
@@ -111,10 +115,15 @@ class Receiver(object):
         for i in range(0,len(data)):
             checksum ^= data[i]
         self.checksum[3] = checksum
-        # print(f"Calculated CHECKSUM = {checksum}")
+        # print(f"Calculated CHECKSUM = {self.checksum} - received = {self.message.get('checksum')}")
+        if self.checksum == self.message.get("checksum"):
+            return True
+        else:
+            return False
+        
 
     def get_message_rx(self):
-        return self.message
+        return self.messageS
     
     def parse_command(self):
         if self.message["cmd"] == 112:
@@ -199,7 +208,7 @@ class Receiver(object):
             data = self.message.get("data")
             #print("\n--------------------------------------------")
             data = [chr(i) for i in data]
-            self.messager.signal.emit(f"FW_version: {"".join(data)}")
+            self.messager.signal.emit(f"FW_version: {''.join(data)}")
             #print("--------------------------------------------\n")
 
         elif self.message["cmd"] == 144:
@@ -225,15 +234,23 @@ class Handler(Transmitter, Receiver):
         self.repeats = 0
         self.max_repeats = 0
         self.repeat_interval = 0
-        self.messager = messager
+        self.messager = messager  #messager class
         self.messager.killsignal.connect(self.set_killflag)
+        self.messager.data_tx.connect(self.set_transmitter_data)
         self.killflag = 0
-        self.stop_tx_flag = False
+        self.tx_enabled = False
+        self.hb_timeout = 0
         self.tx_th_lock = False
+        self.queue = Queue(maxsize=14)
         self.read_thread = Thread(target=self.read_serial,args=[])
         self.read_thread.start()
-        # self.thread_watch()
-        
+        self.write_thread = Thread(target=self.transmit, args=[])
+        self.write_thread.start()
+        self.hb_thread = Thread(target=self.hb_transmit, args=[])
+
+    def get_ack_token(self):
+        return
+
     def thread_watch(self):
         while 1:
             if (self.read_thread.is_alive() == False):
@@ -242,13 +259,12 @@ class Handler(Transmitter, Receiver):
     def set_max_repeats(self, max_repeats):
         self.max_repeats = max_repeats
 
-    def set_repeat_interval(self, interval):
-        self.repeat_interval = interval
-
     def set_killflag(self, val):
         self.killflag = val
 
-   
+    def set_transmitter_data(self,val:list):
+        self.set_tx_data(val)
+  
     def read_serial(self):
         while (self.killflag == 0):
             if self.serial.in_waiting() > 1:
@@ -256,104 +272,83 @@ class Handler(Transmitter, Receiver):
                 r =  bytes.hex(self.serial.read_all(), " ")
                 r = r.split(" ")
                 # print(r)
-                if r[0] == "5b" or r[1] == "5b":
-                    buff = []
-                    for t in r:
-                        buff.append(chr(int(t,16)))
-                        if (t == "0a"):
-                            text = "".join(buff)
-                            self.messager.signal.emit(f"|Debug|: {text}")
-                            buff = []
-                else:
-                    if (r[-1] == "03" and r[-2] != "1b"):
-                        self.packet = r
-                        # print(f"Initial packet: {self.packet}")
-                        if self.packet[0] in ["06", "15"]:
-                            if self.packet[0] == "06":
-                                self.messager.signal.emit("| ACK |")
-                            elif self.packet[0] == "15":
-                                self.messager.signal.emit("| NACK |")
-                            if self.packet[1] == "1b":
-                                self.packet = self.packet[3:]
+                # if r[0] == "5b" or r[1] == "5b":
+                #     buff = []
+                #     for t in r:
+                #         buff.append(chr(int(t,16)))
+                #         if (t == "0a"):
+                #             text = "".join(buff)
+                #             self.messager.signal.emit(f"|Debug|: {text}")
+                #             buff = []
+                # else:
+                if (r[-1] == "03" and r[-2] != "1b"):
+                    self.packet = r
+                    # print(f"Initial packet: {self.packet}")
+                    if self.packet[0] in ["06", "15"]:
+                        if self.packet[0] == "06":
+                            self.messager.signal.emit("| ACK |")
+                        elif self.packet[0] == "15":
+                            self.messager.signal.emit("| NACK |")
+                        if self.packet[1] == "1b":
+                            self.packet = self.packet[3:]
+                        else:
+                            self.packet = self.packet[2:]
+                    print(f"Packet: {self.packet}")
+                    try:
+                        for i in range(0,len(self.packet)):
+                            if self.packet[i] == "1b" and self.packet[i+1] in self.special_chars:
+                                pass
                             else:
-                                self.packet = self.packet[2:]
-                        # print(f"Packet: {self.packet}")
+                                self.payload.append(ord(chr(int(self.packet[i], 16))))
+                    except Exception as e:
+                        print (str(e))                          
+                    if self.payload != []:
                         try:
-                            for i in range(0,len(self.packet)):
-                                if self.packet[i] == "1b" and self.packet[i+1] in self.special_chars:
-                                    pass
-                                else:
-                                    self.payload.append(ord(chr(int(self.packet[i], 16))))
+                            self.parse(self.payload)
+                            self.messager.signal.emit(f"Received Message = {self.message}")
+                            if self.calc_checksum() == True:
+                                self.send_ACK()
+                                self.queue.put(self.message.get("cmd"))
+                                
+                            else:
+                                self.send_NACK()
+                                self.messager.signal.emit(f"Invalid checksum")
                         except Exception as e:
-                            print (str(e))                          
-                        if self.payload != []:
-                            try:
-                                self.parse(self.payload)
-                                self.messager.signal.emit(f"Received Message = {self.message}")
-                                self.calc_checksum()
-                                self.parse_command()
-                            except Exception as e:
-                                self.messager.signal.emit(f"Failed to parse message: {str(e)}")
-                            finally:
-                                # print("send")
-                                mess = bytes([6,self.TOKEN])
-                                self.serial.write_serial(mess)
-                                self.packet = []
-                    else:
-                        self.packet = self.packet + r
+                            self.messager.signal.emit(f"Failed to parse message: {str(e)}")
+                        finally:
+                            self.packet = []
+                else:
+                    self.packet = self.packet + r
                 self.repeats+=1  
             self.payload = []
 
-    def repeated_tx_start(self):
-        if self.tx_th_lock ==True:
-            return
-        Thread(target=self.repeated_tx,args=[]).start()
-
-    def transmit_message(self):
-        self.construct_message()
-        self.calc_checksum_tx()
-        self.data_add_esc()
-        self.construct_message()
-        self.send_message() 
-
-    def repeated_tx(self):
-        print("Start repeated TX")
-        for i in range(0,self.max_repeats):
-            if self.stop_tx_flag == True:
-                break
-            self.transmit_message()
-            time.sleep(self.repeat_interval)
-        self.tx_th_lock = False
-        self.stop_tx_flag = False
             
-    # def transmit(self):
-    #     kb = Keyboard()
-    #     while (self.received_flag == False):
-    #         self.construct_message()
-    #         self.calc_checksum_tx()
-    #         self.data_add_esc()
-    #         self.construct_message()
-    #         self.send_message()
-    #         if self.repeats > self.max_repeats:
-    #             break
-    #         if kb.kbhit():
-    #             c = kb.getch()
-    #             if ord(c) == 27: # ESC
-    #                 print(c)
-    #                 break
-    #         time.sleep(self.repeat_interval)
-    #     os._exit(-1)
+    def transmit(self):
+        while (self.killflag == 0):
+            if self.queue.qsize != 0:
+                cmd = self.queue.get() 
+                if cmd == 80:
+                    self.tx_enabled = True
+                if self.tx_enabled == True:
+                    self.set_tx_cmd(cmd)
+                    self.messager.data_set.emit(cmd)
+                    self.construct_message()
+                    self.calc_checksum_tx()
+                    self.send_message()
 
-    # def listen(self):
-    #     kb = Keyboard()
-    #     while 1:
-    #         if kb.kbhit():
-    #             c = kb.getch()
-    #             if ord(c) == 27: # ESC
-    #                 print(c)
-    #                 break
-    #         time.sleep(0.5)
-
-    
+    def hb_transmit(self):
+        while(self.killflag == 0):
+            if self.tx_enabled == True:
+                self.set_tx_cmd(81)
+                self.construct_message()
+                self.calc_checksum_tx()
+                self.send_message()
+                timeout = time.time()
+                while(1):
+                    if 
+                    if time.time() - timeout > 0.15:
+                        self.hb_timeout += 1
+                        break
+                time.sleep(1)
 
 
