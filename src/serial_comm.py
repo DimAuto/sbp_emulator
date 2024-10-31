@@ -63,7 +63,7 @@ class SerialComm(object):
 
     def read_serial(self):
         mes = self.ser.read_until(self.stop_char)
-        mes = mes.split(self.stop_char)[0]
+        # mes = mes.split(self.stop_char)[0]
         return mes
     
     def read_size(self, size):

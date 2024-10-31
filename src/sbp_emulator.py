@@ -4,6 +4,7 @@ from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QApplication
 from manager import Handler
 import time
+import numpy as np
 
 
 class Ui_Form(object):
@@ -22,34 +23,34 @@ class Ui_Form(object):
         self.voltage_sources = {"Battery": 0, "External": 1}
 
         self.messager.signal.connect(self.set_message)
-        self.messager.data_set.connect(self.get_data)
         self.connected_flag = False
         self.stop_tx_flag = False
         
         self.scan_enabled = False
         self.hb_enabled = False
-        self.ack_timeout = 150
+        self.hb_interval = "1000"
         self.max_retransmit = 3
         self.voltage_reply_enabled = False
         self.voltage_source = [0]
         self.gps_coor_enabled = False
         self.gps_clock_enabled = False
-        self.lat = "--"
-        self.long = "--"
-        self.alt = "--"
-        self.hacc = "--"
-        self.gps_h = "--"
-        self.gps_m = "--"
-        self.gps_s = "--"
-        self.battery_V_mv = []
-        self.external_V_mv = []
+        self.lat = "0"
+        self.long = "0"
+        self.alt = "0"
+        self.hacc = "0"
+        self.gps_h = "00"
+        self.gps_m = "00"
+        self.gps_s = "00"
+        self.battery_V_mv = [0, 0]
+        self.external_V_mv = [0, 0]
         self.master_enable = False
         self.tx_data = []
         self.gps_data = []
         self.gps_clock = []
         self.FW_version = ['t','e','s','t','1','2','3']
-        self.commands = {"112": self.battery_V_mv, "114":self.external_V_mv, "116": self.voltage_source,
-                         "86":self.gps_data, "128":self.gps_clock, "101":self.FW_version}
+
+        self.data_dict = {"86": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0], "128":[48,48,48,48,48,48], "112": [0,0],
+                     "114": [0,0], "116":[0], "81":[0], "101": self.FW_version, "51":1.0}
 
     def setupUi(self, Form):
         Form.setObjectName("Form")
@@ -140,7 +141,7 @@ class Ui_Form(object):
         self.horizontalSlider.setObjectName("horizontalSlider")
         self.horizontalSlider.setMinimum(0)
         self.horizontalSlider.setMaximum(25000)
-        self.horizontalSlider.valueChanged.connect(self.set_battery_V)
+        self.horizontalSlider.valueChanged.connect(self.set_external_V)
         self.gridLayout_2.addWidget(self.horizontalSlider, 2, 0, 1, 1)
         self.label_7 = QtWidgets.QLabel(self.verticalWidget)
         self.label_7.setObjectName("label_7")
@@ -164,6 +165,7 @@ class Ui_Form(object):
         self.horizontalSlider_2.setObjectName("horizontalSlider_2")
         self.horizontalSlider_2.setMinimum(0)
         self.horizontalSlider_2.setMaximum(25000)
+        self.horizontalSlider_2.valueChanged.connect(self.set_battery_V)
         self.gridLayout_2.addWidget(self.horizontalSlider_2, 1, 0, 1, 1)
         self.verticalLayout.addLayout(self.gridLayout_2)
         self.line_3 = QtWidgets.QFrame(self.verticalWidget)
@@ -260,7 +262,7 @@ class Ui_Form(object):
         self.pushButton.setText(_translate("Form", "Scan Ports"))
         self.pushButton_2.setText(_translate("Form", "Connect"))
         self.checkBox_6.setText(_translate("Form", "SBP Enable"))
-        self.label_17.setText(_translate("Form", "Ack Timeout ms"))
+        self.label_17.setText(_translate("Form", "Heartbeat Interval"))
         self.label_2.setText(_translate("Form", "Send Heartbeat"))
         self.checkBox_2.setText(_translate("Form", "Enabled"))
         self.label.setText(_translate("Form", "Reply to scan messages"))
@@ -288,6 +290,15 @@ class Ui_Form(object):
         self.comboBox_7.addItems(self.baud_list)
         self.scan_ports()
         self.comboBox.addItems(self.voltage_sources)
+        self.lineEdit.setText(self.lat)
+        self.lineEdit_2.setText(self.long)
+        self.lineEdit_3.setText(self.alt)
+        self.lineEdit_4.setText(self.hacc)
+        self.lineEdit_5.setText(self.gps_h)
+        self.lineEdit_6.setText(self.gps_m)
+        self.lineEdit_7.setText(self.gps_s)
+        self.lineEdit_8.setText(self.hb_interval)
+        self.checkBox_6.setChecked(True)
 
     def enable_all_cb(self):
         self.checkBox.setEnabled(True)
@@ -304,14 +315,22 @@ class Ui_Form(object):
         self.checkBox_4.setEnabled(False)
         self.checkBox_5.setEnabled(False)
         self.checkBox_6.setEnabled(False)
+        self.checkBox.setCheckState(False)
+        self.checkBox_2.setCheckState(False)
+        self.checkBox_3.setCheckState(False)
+        self.checkBox_4.setCheckState(False)
+        self.checkBox_5.setCheckState(False)
+        # self.checkBox_6.setCheckState(False)
+
 
     def log(self, txt, color="yellow"):
         i = QtWidgets.QListWidgetItem(txt)
         i.setForeground(QColor(color))
+        if self.console.count() > 100:
+            self.console.clear
         self.console.addItem(i)
         self.console.scrollToBottom()
-        # if self.console.count() > 80:
-        #     self.console.clear
+        
         QApplication.processEvents()
 
     def clear_console(self):
@@ -371,76 +390,138 @@ class Ui_Form(object):
 
     def set_lat(self):
         self.lat = self.lineEdit.text()
+        self.set_GPS_data()
 
     def get_lat(self):
-        return float(self.lat) * 200000
+        temp = 0
+        try:
+            temp = float(self.lat) * 200000
+            temp = np.uint32(temp)
+        except:
+            pass
+        return [(temp & 0xFF000000) >>24, (temp & 0x00FF0000) >> 16,
+                (temp & 0x0000FF00) >>8, (temp & 0x000000FF)]
 
     def set_long(self):
         self.long = self.lineEdit_2.text()
+        self.set_GPS_data()
 
     def get_long(self):
-        return float(self.long) * 200000
+        temp = 0
+        try:
+            temp = float(self.long) * 200000
+            temp = np.uint32(temp)
+        except:
+            pass
+        return [(temp & 0xFF000000) >>24, (temp & 0x00FF0000) >> 16,
+                (temp & 0x0000FF00) >>8, (temp & 0x000000FF)]
         
     def set_alt(self):
         self.alt = self.lineEdit_3.text()
+        self.set_GPS_data()
 
     def get_alt(self):
-        return float(self.alt) * 200000
+        temp = 0
+        try:
+            temp = float(self.alt) * 200000
+            temp = np.uint32(temp)
+        except:
+            pass
+        return [(temp & 0xFF000000) >>24, (temp & 0x00FF0000) >> 16,
+                (temp & 0x0000FF00) >>8, (temp & 0x000000FF)]
     
     def set_hacc(self):
         self.hacc = self.lineEdit_4.text()
+        self.set_GPS_data()
 
     def get_hacc(self):
-        return float(self.hacc) * 200000
+        temp = 0
+        try:
+            temp = float(self.hacc) * 200000
+            temp = np.uint32(temp)
+        except:
+            pass
+        return [(temp & 0xFF000000) >>24, (temp & 0x00FF0000) >> 16,
+                (temp & 0x0000FF00) >>8, (temp & 0x000000FF)]
 
     def set_GPS_clock_H(self):
         self.gps_h = self.lineEdit_5.text()
-
+        self.set_GPS_clock()
+        
     def get_GPS_clock_H(self):
         return [ord(i) for i in self.gps_h]
 
     def set_GPS_clock_M(self):
         self.gps_m = self.lineEdit_6.text()
+        self.set_GPS_clock()
 
     def get_GPS_clock_M(self):
         return [ord(i) for i in self.gps_m]
 
     def set_GPS_clock_S(self):
         self.gps_s = self.lineEdit_7.text()
+        self.set_GPS_clock()
 
     def get_GPS_clock_S(self):
         return [ord(i) for i in self.gps_s]
 
-
-    def set_GPS_data(self):   
-        self.gps_data = [self.get_lat(), self.get_long(), self.get_alt(), self.get_hacc()]
+    def set_GPS_data(self): 
+        self.gps_data = self.get_lat() + self.get_long() + self.get_alt() + self.get_hacc()
+        self.data_dict["86"] = self.gps_data
+        self.messager.data_tx.emit(self.data_dict)
 
     def set_GPS_clock(self):
         self.gps_clock = self.get_GPS_clock_H() + self.get_GPS_clock_M()+ self.get_GPS_clock_S()
+        self.data_dict["128"] = self.gps_clock
+        self.messager.data_tx.emit(self.data_dict)
 
     def set_voltage_source(self):
         self.voltage_source[0] = (self.voltage_sources.get(self.comboBox.currentText()))
+        self.data_dict["116"] = self.voltage_source
+        self.messager.data_tx.emit(self.data_dict)
 
     def get_voltage_source(self):
         return self.voltage_source
     
     def set_battery_V(self):
-        self.battery_V_mv = self.horizontalSlider.value()
+        temp = self.horizontalSlider_2.value()
+        self.label_7.setText(str(temp))
+        temp = np.uint16(temp * 4.095)
+        self.battery_V_mv[0] = temp >> 8
+        self.battery_V_mv[1] = temp & 0xFF
+        self.data_dict["112"] = self.battery_V_mv
+        self.messager.data_tx.emit(self.data_dict)
 
-    def get_battery_V(self):
+    def get_battery_V(self) ->list:
         pass
 
     def set_external_V(self):
-        self.external_V_mv = self.horizontalSlider_2.value()
+        temp = self.horizontalSlider.value()
+        self.label_8.setText(str(temp))
+        temp = np.uint16(temp * 4.095)
+        self.external_V_mv[0] = temp >> 8
+        self.external_V_mv[1] = temp & 0xFF
+        self.data_dict["114"] = self.battery_V_mv
+        self.messager.data_tx.emit(self.data_dict)
 
     def get_external_V(self):
         pass
 
     def set_ack_timeout_ms(self):
-        self.ack_timeout = self.lineEdit_8.text()
+        self.hb_interval = self.lineEdit_8.text()
+        try:
+            temp = int(self.hb_interval)
+            if temp in range(500, 10001):
+                self.data_dict["51"] = temp / 1000
+                self.messager.data_tx.emit(self.data_dict)
+                self.lineEdit_8.setStyleSheet("background-color: white")
+            else:
+                self.lineEdit_8.setStyleSheet("background-color: red")
+        except:
+            self.lineEdit_8.setStyleSheet("background-color: red")
 
     def get_ack_timeout_ms(self):
-        return int(self.ack_timeout) / 1000
+        return int(self.hb_interval) / 1000
     
     def set_max_retransmit(self):
         self.max_retransmit = int(self.spinBox.text())
@@ -450,63 +531,57 @@ class Ui_Form(object):
 
     def set_scan_enabled(self):
         self.scan_enabled = self.checkBox.isChecked()
+        self.messager.reply_scan.emit(self.scan_enabled) #Send message to handler
 
     def get_scan_enabled(self):
         return self.scan_enabled
 
     def set_hb_enabled(self):
         self.hb_enabled = self.checkBox_2.isChecked()
+        self.messager.send_hb.emit(self.hb_enabled) #Send message to handler
 
     def get_hb_enabled(self):
         return self.hb_enabled
 
     def set_voltage_enabled(self):
         self.voltage_reply_enabled = self.checkBox_3.isChecked()
+        self.messager.reply_voltage.emit(self.voltage_reply_enabled) #Send message to handler
 
     def get_voltage_enabled(self):
         return self.voltage_reply_enabled
 
     def set_gps_coor_enabled(self):
         self.gps_coor_enabled = self.checkBox_4.isChecked()
+        self.set_GPS_data()
+        self.messager.reply_GPS_location.emit(self.gps_coor_enabled) #Send message to handler
 
     def get_gps_coor_enabled(self):
         return self.gps_coor_enabled
 
     def set_gps_clock_enabled(self):
         self.gps_clock_enabled = self.checkBox_5.isChecked()
+        self.set_GPS_clock()
+        self.messager.reply_GPS_clock.emit(self.gps_clock_enabled) #Send message to handler
 
     def get_gps_clock_enabled(self):
         return self.gps_coor_enabled
 
     def set_master_enabled(self):
         self.master_enable = self.checkBox_6.isChecked()
+        self.messager.master_enable.emit(self.master_enable)
 
     def get_master_enabled(self):
         return self.master_enable
     
-    def get_data(self, cmd):
-        data = []
-        data = self.commands.get(str(cmd))
-        self.messager.data_tx.signal.emit(data)
 
 class Messager(QtCore.QObject):
     signal = QtCore.pyqtSignal(str)
     killsignal = QtCore.pyqtSignal(int)
-    data_tx = QtCore.pyqtSignal(list)
-    data_set = QtCore.pyqtSignal(int)
+    data_tx = QtCore.pyqtSignal(dict)
     reply_scan = QtCore.pyqtSignal(bool)
     send_hb = QtCore.pyqtSignal(bool)
     reply_voltage = QtCore.pyqtSignal(bool)
     reply_GPS_location = QtCore.pyqtSignal(bool)
     reply_GPS_clock = QtCore.pyqtSignal(bool)
+    master_enable = QtCore.pyqtSignal(bool)
     
-
-
-# if __name__ == "__main__":
-#     import sys
-#     app = QtWidgets.QApplication(sys.argv)
-#     Form = QtWidgets.QWidget()
-#     ui = Ui_Form()
-#     ui.setupUi(Form)
-#     Form.show()
-#     sys.exit(app.exec_())
